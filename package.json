@@ -1,6 +1,6 @@
 {
   "name": "typescript-retry-decorator",
-  "version": "2.0.5",
+  "version": "3.0.0",
   "description": "A simple retry decorator for typescript with no dependency.",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -13,29 +13,30 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/vcfvct/typescript-retry-decorator.git"
+    "url": "git+https://github.com/ehealth-co-id/typescript-retry-decorator.git"
   },
   "keywords": [
-    "typescirpt",
+    "typescript",
     "decorator",
+    "resilience",
     "retry"
   ],
   "author": "Han Li",
   "license": "MIT",
   "bugs": {
-    "url": "https://github.com/vcfvct/typescript-retry-decorator/issues"
+    "url": "https://github.com/ehealth-co-id/typescript-retry-decorator/issues"
   },
-  "homepage": "https://github.com/vcfvct/typescript-retry-decorator#readme",
+  "homepage": "https://github.com/ehealth-co-id/typescript-retry-decorator#readme",
   "devDependencies": {
     "@types/jest": "^28.1.1",
     "@types/node": "^17.0.41",
     "@typescript-eslint/eslint-plugin": "^5.27.1",
     "@typescript-eslint/parser": "^5.27.1",
-    "eslint": "^8.17.0",
+    "eslint": "^8.57.1",
     "eslint-config-ts-vcfvct": "^1.0.0",
     "jest": "^28.1.1",
     "ts-jest": "^28.0.4",
     "ts-node": "^10.8.1",
-    "typescript": "^4.7.3"
+    "typescript": "^5.9.3"
   }
 }
