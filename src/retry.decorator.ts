@@ -35,15 +35,41 @@ function createRetryHandler(options: RetryOptions) {
           throw new AbortError('Retry operation aborted');
         }
         
-        // Sleep with abort signal support
+        // Sleep with abort signal support and jitter
         if (backOff) {
-          await sleepWithAbort(backOff, options.signal);
+          const finalBackOff = applyJitter(backOff);
+          await sleepWithAbort(finalBackOff, options.signal);
         }
         
         if (options.backOffPolicy === BackOffPolicy.ExponentialBackOffPolicy) {
           backOff = Math.min(backOff * Math.pow(options.exponentialOption.multiplier, i), options.exponentialOption.maxInterval);
         }
       }
+    }
+  }
+
+  function applyJitter(baseBackOff: number): number {
+    if (!options.useJitter) {
+      return baseBackOff;
+    }
+
+    const jitterType = options.jitterType || 'full';
+
+    switch (jitterType) {
+      case 'full':
+        // Full jitter: random between 0 and baseBackOff
+        return Math.random() * baseBackOff;
+      
+      case 'equal':
+        // Equal jitter: baseBackOff/2 + random(0, baseBackOff/2)
+        return baseBackOff / 2 + Math.random() * (baseBackOff / 2);
+      
+      case 'decorrelated':
+        // Decorrelated jitter: random between baseBackOff and baseBackOff * 3
+        return baseBackOff + Math.random() * (baseBackOff * 2);
+      
+      default:
+        return baseBackOff;
     }
   }
 
@@ -102,6 +128,14 @@ function createRetryHandler(options: RetryOptions) {
  * // Basic usage
  * const fetchWithRetry = withRetry({ maxAttempts: 3, backOff: 1000 }, fetchData);
  * const result = await fetchWithRetry(url);
+ * 
+ * // With jitter to prevent thundering herd
+ * const fetchWithRetry = withRetry({ 
+ *   maxAttempts: 5, 
+ *   backOff: 2000,
+ *   useJitter: true,
+ *   jitterType: 'full'  // full, equal, or decorrelated
+ * }, fetchData);
  * 
  * // With AbortSignal for cancellation
  * const controller = new AbortController();
@@ -202,7 +236,11 @@ export interface RetryOptions {
   exponentialOption?: { maxInterval: number; multiplier: number };
   reraise?: boolean;
   signal?: AbortSignal;
+  useJitter?: boolean;
+  jitterType?: 'full' | 'equal' | 'decorrelated';
 }
+
+export type JitterType = 'full' | 'equal' | 'decorrelated';
 
 export enum BackOffPolicy {
   FixedBackOffPolicy = 'FixedBackOffPolicy',

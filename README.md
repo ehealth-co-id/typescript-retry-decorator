@@ -7,6 +7,7 @@ Import and use it. Retry for `Promise` is supported as long as the `runtime` has
 **Features:**
 - 🎯 Use as decorator (`@Retryable`) or function wrapper (`withRetry`)
 - ⏱️ Fixed and exponential backoff strategies
+- 🎲 Jitter support (full, equal, decorrelated) to prevent thundering herd
 - 🚫 Cancellable with `AbortSignal` support
 - 🎨 Conditional retry with custom logic
 - 📦 Zero dependencies
@@ -26,6 +27,8 @@ Import and use it. Retry for `Promise` is supported as long as the `runtime` has
 | value             | Error/Exception class | No        | [ ]                                     | An array of Exception types that are retryable.                                                                   |
 | reraise           | boolean               | No        | false                                   | If `true`, rethrows the original error instead of `MaxAttemptsError` when max attempts is reached.                 |
 | signal            | AbortSignal           | No        | -                                       | An `AbortSignal` to cancel the retry operation. Throws `AbortError` when aborted.                                 |
+| useJitter         | boolean               | No        | false                                   | If `true`, adds random jitter to backoff duration to prevent thundering herd problem.                              |
+| jitterType        | 'full' \| 'equal' \| 'decorrelated' | No | 'full'                          | Type of jitter: `full` (0 to backOff), `equal` (backOff/2 to backOff), `decorrelated` (backOff to 3×backOff).     |
 
 ## Usage
 
@@ -189,6 +192,68 @@ try {
 }
 ```
 
+### Jitter to Prevent Thundering Herd
+```typescript
+import { withRetry, BackOffPolicy } from 'typescript-retry-decorator';
+
+// Full Jitter - Random backoff between 0 and backOff duration
+// Provides maximum randomization to spread out retry attempts
+const fetchWithFullJitter = withRetry(
+  { 
+    maxAttempts: 5, 
+    backOff: 2000,
+    useJitter: true,
+    jitterType: 'full'  // Backoff will be 0-2000ms randomly
+  },
+  async (url: string) => {
+    const response = await fetch(url);
+    if (!response.ok) throw new Error('Failed');
+    return response.json();
+  }
+);
+
+// Equal Jitter - Random backoff between backOff/2 and backOff
+// Maintains minimum wait time while adding randomness
+const fetchWithEqualJitter = withRetry(
+  { 
+    maxAttempts: 5, 
+    backOff: 2000,
+    useJitter: true,
+    jitterType: 'equal'  // Backoff will be 1000-2000ms randomly
+  },
+  fetchData
+);
+
+// Decorrelated Jitter - Can increase backoff beyond base duration
+// More aggressive randomization for heavily loaded systems
+const fetchWithDecorrelatedJitter = withRetry(
+  { 
+    maxAttempts: 5, 
+    backOff: 1000,
+    useJitter: true,
+    jitterType: 'decorrelated'  // Backoff will be 1000-3000ms randomly
+  },
+  fetchData
+);
+
+// Jitter with Exponential Backoff
+// Combines exponential growth with randomization
+@Retryable({
+  maxAttempts: 5,
+  backOff: 1000,
+  backOffPolicy: BackOffPolicy.ExponentialBackOffPolicy,
+  exponentialOption: { maxInterval: 30000, multiplier: 2 },
+  useJitter: true,
+  jitterType: 'full'
+})
+async apiCallWithJitter() {
+  // First retry: 0-1000ms
+  // Second retry: 0-2000ms
+  // Third retry: 0-4000ms
+  // etc.
+}
+```
+
 ### Cancellable Retry with AbortSignal
 ```typescript
 import { withRetry, AbortError } from 'typescript-retry-decorator';
@@ -339,7 +404,11 @@ export interface RetryOptions {
   exponentialOption?: { maxInterval: number; multiplier: number };
   reraise?: boolean;
   signal?: AbortSignal;
+  useJitter?: boolean;
+  jitterType?: 'full' | 'equal' | 'decorrelated';
 }
+
+export type JitterType = 'full' | 'equal' | 'decorrelated';
 ```
 
 ## Common Use Cases
@@ -367,6 +436,25 @@ const apiCall = withRetry(
 })
 async fetchFromUnstableService() {
   // Your code here
+}
+```
+
+### Preventing Thundering Herd in Microservices
+```typescript
+// When multiple service instances fail simultaneously,
+// jitter prevents them all from retrying at the exact same time
+@Retryable({
+  maxAttempts: 5,
+  backOff: 2000,
+  backOffPolicy: BackOffPolicy.ExponentialBackOffPolicy,
+  exponentialOption: { maxInterval: 30000, multiplier: 2 },
+  useJitter: true,
+  jitterType: 'full'  // Spreads retry attempts across time
+})
+async callDownstreamService(serviceUrl: string) {
+  const response = await fetch(serviceUrl);
+  if (!response.ok) throw new Error(`Service error: ${response.status}`);
+  return response.json();
 }
 ```
 

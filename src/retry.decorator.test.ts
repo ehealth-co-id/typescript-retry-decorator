@@ -596,3 +596,247 @@ describe('AbortSignal Support Test', () => {
   });
 });
 
+describe('Jitter Support Test', () => {
+  test('full jitter reduces backoff time variably', async () => {
+    const durations: number[] = [];
+    
+    for (let iteration = 0; iteration < 5; iteration++) {
+      const asyncFunction = jest.fn()
+        .mockRejectedValueOnce(new Error('Failed'))
+        .mockResolvedValueOnce('success');
+      
+      const wrappedFunction = withRetry({
+        maxAttempts: 2,
+        backOff: 1000,
+        useJitter: true,
+        jitterType: 'full'
+      }, asyncFunction);
+      
+      const startTime = Date.now();
+      await wrappedFunction();
+      const duration = Date.now() - startTime;
+      durations.push(duration);
+      
+      // With full jitter, duration should be less than 1000ms
+      expect(duration).toBeLessThan(1100); // Some margin for execution time
+    }
+    
+    // Check that durations vary (not all the same)
+    const uniqueDurations = new Set(durations.map(d => Math.floor(d / 10)));
+    expect(uniqueDurations.size).toBeGreaterThan(1);
+  });
+
+  test('equal jitter maintains minimum backoff time', async () => {
+    const durations: number[] = [];
+    
+    for (let iteration = 0; iteration < 5; iteration++) {
+      const asyncFunction = jest.fn()
+        .mockRejectedValueOnce(new Error('Failed'))
+        .mockResolvedValueOnce('success');
+      
+      const wrappedFunction = withRetry({
+        maxAttempts: 2,
+        backOff: 1000,
+        useJitter: true,
+        jitterType: 'equal'
+      }, asyncFunction);
+      
+      const startTime = Date.now();
+      await wrappedFunction();
+      const duration = Date.now() - startTime;
+      durations.push(duration);
+      
+      // With equal jitter, duration should be between 500ms and 1000ms
+      expect(duration).toBeGreaterThanOrEqual(450); // Some margin
+      expect(duration).toBeLessThan(1100);
+    }
+    
+    // Check that durations vary
+    const uniqueDurations = new Set(durations.map(d => Math.floor(d / 10)));
+    expect(uniqueDurations.size).toBeGreaterThan(1);
+  });
+
+  test('decorrelated jitter can increase backoff time', async () => {
+    const asyncFunction = jest.fn()
+      .mockRejectedValueOnce(new Error('Failed'))
+      .mockResolvedValueOnce('success');
+    
+    const wrappedFunction = withRetry({
+      maxAttempts: 2,
+      backOff: 100, // Small base for faster test
+      useJitter: true,
+      jitterType: 'decorrelated'
+    }, asyncFunction);
+    
+    const startTime = Date.now();
+    await wrappedFunction();
+    const duration = Date.now() - startTime;
+    
+    // With decorrelated jitter, duration can be up to 3x baseBackOff
+    expect(duration).toBeGreaterThanOrEqual(90);
+    expect(duration).toBeLessThan(400); // 100ms * 3 + margin
+  });
+
+  test('no jitter maintains exact backoff time', async () => {
+    const asyncFunction = jest.fn()
+      .mockRejectedValueOnce(new Error('Failed'))
+      .mockResolvedValueOnce('success');
+    
+    const wrappedFunction = withRetry({
+      maxAttempts: 2,
+      backOff: 500,
+      useJitter: false
+    }, asyncFunction);
+    
+    const startTime = Date.now();
+    await wrappedFunction();
+    const duration = Date.now() - startTime;
+    
+    // Without jitter, should be close to exactly 500ms
+    expect(duration).toBeGreaterThanOrEqual(450);
+    expect(duration).toBeLessThan(600);
+  });
+
+  test('jitter with exponential backoff', async () => {
+    const durations: number[] = [];
+    let attemptCount = 0;
+    
+    const asyncFunction = jest.fn()
+      .mockImplementation(() => {
+        attemptCount++;
+        if (attemptCount < 3) {
+          throw new Error('Failed');
+        }
+        return 'success';
+      });
+    
+    const wrappedFunction = withRetry({
+      maxAttempts: 3,
+      backOff: 100,
+      backOffPolicy: BackOffPolicy.ExponentialBackOffPolicy,
+      exponentialOption: { maxInterval: 1000, multiplier: 2 },
+      useJitter: true,
+      jitterType: 'full'
+    }, asyncFunction);
+    
+    const startTime = Date.now();
+    await wrappedFunction();
+    const duration = Date.now() - startTime;
+    
+    // With exponential backoff and full jitter:
+    // First retry: 0-100ms, Second retry: 0-200ms
+    // Total should be less than 300ms + margin
+    expect(duration).toBeLessThan(400);
+    expect(asyncFunction).toHaveBeenCalledTimes(3);
+  });
+
+  test('jitter works with decorator', async () => {
+    class TestService {
+      callCount = 0;
+      
+      @Retryable({
+        maxAttempts: 2,
+        backOff: 500,
+        useJitter: true,
+        jitterType: 'equal'
+      })
+      async fetchData(): Promise<string> {
+        this.callCount++;
+        if (this.callCount < 2) {
+          throw new Error('Failed');
+        }
+        return 'success';
+      }
+    }
+    
+    const service = new TestService();
+    
+    const startTime = Date.now();
+    const result = await service.fetchData();
+    const duration = Date.now() - startTime;
+    
+    expect(result).toBe('success');
+    expect(service.callCount).toBe(2);
+    // With equal jitter on 500ms, should be 250-500ms
+    expect(duration).toBeGreaterThanOrEqual(200);
+    expect(duration).toBeLessThan(600);
+  });
+
+  test('jitter with fixed backoff policy', async () => {
+    let attemptCount = 0;
+    
+    const asyncFunction = jest.fn()
+      .mockImplementation(() => {
+        attemptCount++;
+        if (attemptCount < 3) {
+          throw new Error('Failed');
+        }
+        return 'success';
+      });
+    
+    const wrappedFunction = withRetry({
+      maxAttempts: 3,
+      backOff: 200,
+      backOffPolicy: BackOffPolicy.FixedBackOffPolicy,
+      useJitter: true,
+      jitterType: 'full'
+    }, asyncFunction);
+    
+    const startTime = Date.now();
+    await wrappedFunction();
+    const duration = Date.now() - startTime;
+    
+    // With fixed backoff and full jitter:
+    // Two retries with 0-200ms each = 0-400ms total
+    expect(duration).toBeLessThan(500);
+    expect(asyncFunction).toHaveBeenCalledTimes(3);
+  });
+
+  test('default jitter type is full when not specified', async () => {
+    const asyncFunction = jest.fn()
+      .mockRejectedValueOnce(new Error('Failed'))
+      .mockResolvedValueOnce('success');
+    
+    const wrappedFunction = withRetry({
+      maxAttempts: 2,
+      backOff: 1000,
+      useJitter: true
+      // jitterType not specified, should default to 'full'
+    }, asyncFunction);
+    
+    const startTime = Date.now();
+    await wrappedFunction();
+    const duration = Date.now() - startTime;
+    
+    // Should behave like full jitter
+    expect(duration).toBeLessThan(1100);
+  });
+
+  test('jitter disabled by default', async () => {
+    const durations: number[] = [];
+    
+    for (let iteration = 0; iteration < 3; iteration++) {
+      const asyncFunction = jest.fn()
+        .mockRejectedValueOnce(new Error('Failed'))
+        .mockResolvedValueOnce('success');
+      
+      const wrappedFunction = withRetry({
+        maxAttempts: 2,
+        backOff: 500
+        // useJitter not specified, should be disabled
+      }, asyncFunction);
+      
+      const startTime = Date.now();
+      await wrappedFunction();
+      const duration = Date.now() - startTime;
+      durations.push(duration);
+    }
+    
+    // Without jitter, all durations should be very similar
+    const avgDuration = durations.reduce((a, b) => a + b, 0) / durations.length;
+    durations.forEach(d => {
+      expect(Math.abs(d - avgDuration)).toBeLessThan(50); // Should be consistent
+    });
+  });
+});
+
