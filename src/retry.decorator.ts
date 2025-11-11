@@ -1,38 +1,21 @@
 import { sleep } from './utils';
 
 /**
- * retry decorator which is nothing but a high order function wrapper
- *
- * @param options the 'RetryOptions'
+ * Core retry logic that can be used by both decorator and function wrapper
  */
-export function Retryable(options: RetryOptions): DecoratorFunction {
-  /**
-   * target: The prototype of the class (Object)
-   * propertyKey: The name of the method (string | symbol).
-   * descriptor: A TypedPropertyDescriptor — see the type, leveraging the Object.defineProperty under the hood.
-   *
-   * NOTE: It's very important here we do not use arrow function otherwise 'this' will be messed up due
-   * to the nature how arrow function defines this inside.
-   *
-   */
-  return function(target: Record<string, any>, propertyKey: string, descriptor: TypedPropertyDescriptor<any>) {
-    const originalFn = descriptor.value;
-    // set default value for ExponentialBackOffPolicy
-    if (options.backOffPolicy === BackOffPolicy.ExponentialBackOffPolicy) {
-      setExponentialBackOffPolicyDefault();
-    }
-    descriptor.value = async function(...args: any[]) {
-      return await retryAsync.apply(this, [originalFn, args, options.maxAttempts, options.backOff]);
-    };
-    return descriptor;
-  };
+function createRetryHandler(options: RetryOptions) {
+  // set default value for ExponentialBackOffPolicy
+  if (options.backOffPolicy === BackOffPolicy.ExponentialBackOffPolicy) {
+    setExponentialBackOffPolicyDefault(options);
+  }
 
-  async function retryAsync(fn: () => any, args: any[], maxAttempts: number, backOff?: number): Promise<any> {
-    for (let i = 0; i<(maxAttempts+1); i++) {
+  async function retryAsync(fn: (...args: any[]) => any, context: any, args: any[]): Promise<any> {
+    let backOff = options.backOff;
+    for (let i = 0; i < (options.maxAttempts + 1); i++) {
       try {
-        return await fn.apply(this, args);
+        return await fn.apply(context, args);
       } catch (e) {
-        if (i == maxAttempts) {
+        if (i == options.maxAttempts) {
           if (options.reraise) {
             throw e;
           }
@@ -45,7 +28,7 @@ export function Retryable(options: RetryOptions): DecoratorFunction {
         if (options.backOffPolicy === BackOffPolicy.ExponentialBackOffPolicy) {
           backOff = Math.min(backOff * Math.pow(options.exponentialOption.multiplier, i), options.exponentialOption.maxInterval);
         }
-      } 
+      }
     }
   }
 
@@ -59,13 +42,77 @@ export function Retryable(options: RetryOptions): DecoratorFunction {
     return true;
   }
 
-  function setExponentialBackOffPolicyDefault(): void {
-    !options.backOff && (options.backOff = 1000);
-    options.exponentialOption = {
+  function setExponentialBackOffPolicyDefault(opts: RetryOptions): void {
+    !opts.backOff && (opts.backOff = 1000);
+    opts.exponentialOption = {
       ...{ maxInterval: 2000, multiplier: 2 },
-      ...options.exponentialOption,
+      ...opts.exponentialOption,
     };
   }
+
+  return retryAsync;
+}
+
+/**
+ * Wraps a function with retry logic. Can be used as a standalone function wrapper.
+ * 
+ * @param options the 'RetryOptions'
+ * @param fn the function to wrap with retry logic
+ * @returns a wrapped function with retry capabilities
+ * 
+ * @example
+ * ```typescript
+ * const fetchWithRetry = withRetry({ maxAttempts: 3, backOff: 1000 }, fetchData);
+ * const result = await fetchWithRetry(url);
+ * ```
+ */
+export function withRetry<T extends (...args: any[]) => any>(
+  options: RetryOptions,
+  fn: T
+): T {
+  const retryHandler = createRetryHandler(options);
+  
+  return (async function(this: any, ...args: any[]) {
+    return await retryHandler(fn, this, args);
+  }) as T;
+}
+
+/**
+ * retry decorator which is nothing but a high order function wrapper
+ *
+ * @param options the 'RetryOptions'
+ * 
+ * @example
+ * ```typescript
+ * class MyService {
+ *   @Retryable({ maxAttempts: 3, backOff: 1000 })
+ *   async fetchData(url: string) {
+ *     // ... implementation
+ *   }
+ * }
+ * ```
+ */
+export function Retryable(options: RetryOptions): DecoratorFunction {
+  const retryHandler = createRetryHandler(options);
+  
+  /**
+   * target: The prototype of the class (Object)
+   * propertyKey: The name of the method (string | symbol).
+   * descriptor: A TypedPropertyDescriptor — see the type, leveraging the Object.defineProperty under the hood.
+   *
+   * NOTE: It's very important here we do not use arrow function otherwise 'this' will be messed up due
+   * to the nature how arrow function defines this inside.
+   *
+   */
+  return function(target: Record<string, any>, propertyKey: string, descriptor: TypedPropertyDescriptor<any>) {
+    const originalFn = descriptor.value;
+    
+    descriptor.value = async function(...args: any[]) {
+      return await retryHandler(originalFn, this, args);
+    };
+    
+    return descriptor;
+  };
 }
 
 export class MaxAttemptsError extends Error {
