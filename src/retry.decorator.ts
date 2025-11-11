@@ -12,6 +12,11 @@ function createRetryHandler(options: RetryOptions) {
   async function retryAsync(fn: (...args: any[]) => any, context: any, args: any[]): Promise<any> {
     let backOff = options.backOff;
     for (let i = 0; i < (options.maxAttempts + 1); i++) {
+      // Check if signal is already aborted before attempting
+      if (options.signal?.aborted) {
+        throw new AbortError('Retry operation aborted');
+      }
+
       try {
         return await fn.apply(context, args);
       } catch (e) {
@@ -24,12 +29,44 @@ function createRetryHandler(options: RetryOptions) {
         if (!canRetry(e)) {
           throw e;
         }
-        backOff && (await sleep(backOff));
+        
+        // Check if signal is aborted before sleeping
+        if (options.signal?.aborted) {
+          throw new AbortError('Retry operation aborted');
+        }
+        
+        // Sleep with abort signal support
+        if (backOff) {
+          await sleepWithAbort(backOff, options.signal);
+        }
+        
         if (options.backOffPolicy === BackOffPolicy.ExponentialBackOffPolicy) {
           backOff = Math.min(backOff * Math.pow(options.exponentialOption.multiplier, i), options.exponentialOption.maxInterval);
         }
       }
     }
+  }
+
+  async function sleepWithAbort(ms: number, signal?: AbortSignal): Promise<void> {
+    if (signal?.aborted) {
+      throw new AbortError('Retry operation aborted');
+    }
+
+    return new Promise((resolve, reject) => {
+      const timeout = setTimeout(resolve, ms);
+      
+      const onAbort = () => {
+        clearTimeout(timeout);
+        reject(new AbortError('Retry operation aborted'));
+      };
+
+      signal?.addEventListener('abort', onAbort, { once: true });
+
+      // Clean up the event listener when sleep completes normally
+      setTimeout(() => {
+        signal?.removeEventListener('abort', onAbort);
+      }, ms);
+    });
   }
 
   function canRetry(e: Error): boolean {
@@ -62,8 +99,28 @@ function createRetryHandler(options: RetryOptions) {
  * 
  * @example
  * ```typescript
+ * // Basic usage
  * const fetchWithRetry = withRetry({ maxAttempts: 3, backOff: 1000 }, fetchData);
  * const result = await fetchWithRetry(url);
+ * 
+ * // With AbortSignal for cancellation
+ * const controller = new AbortController();
+ * const fetchWithRetry = withRetry({ 
+ *   maxAttempts: 5, 
+ *   backOff: 2000,
+ *   signal: controller.signal 
+ * }, fetchData);
+ * 
+ * // Cancel the retry operation
+ * setTimeout(() => controller.abort(), 3000);
+ * 
+ * try {
+ *   const result = await fetchWithRetry(url);
+ * } catch (error) {
+ *   if (error instanceof AbortError) {
+ *     console.log('Retry operation was cancelled');
+ *   }
+ * }
  * ```
  */
 export function withRetry<T extends (...args: any[]) => any>(
@@ -127,6 +184,15 @@ export class MaxAttemptsError extends Error {
   }
 }
 
+export class AbortError extends Error {
+  code = 'ABORT_ERR';
+  constructor(message: string = 'The operation was aborted') {
+    super(message);
+    this.name = 'AbortError';
+    Object.setPrototypeOf(this, AbortError.prototype);
+  }
+}
+
 export interface RetryOptions {
   maxAttempts: number;
   backOffPolicy?: BackOffPolicy;
@@ -135,6 +201,7 @@ export interface RetryOptions {
   value?: ErrorConstructor[];
   exponentialOption?: { maxInterval: number; multiplier: number };
   reraise?: boolean;
+  signal?: AbortSignal;
 }
 
 export enum BackOffPolicy {

@@ -4,6 +4,14 @@ This is inspired by the [Spring-Retry project](https://github.com/spring-project
 
 Import and use it. Retry for `Promise` is supported as long as the `runtime` has promise(nodejs/evergreen-browser).
 
+**Features:**
+- 🎯 Use as decorator (`@Retryable`) or function wrapper (`withRetry`)
+- ⏱️ Fixed and exponential backoff strategies
+- 🚫 Cancellable with `AbortSignal` support
+- 🎨 Conditional retry with custom logic
+- 📦 Zero dependencies
+- 💯 100% test coverage
+
 ### Install
 > npm install typescript-retry-decorator
 
@@ -16,150 +24,365 @@ Import and use it. Retry for `Promise` is supported as long as the `runtime` has
 | exponentialOption | object                | No        | { maxInterval: 2000,    multiplier: 2 } | This is for the `ExponentialBackOffPolicy` <br/> The max interval each wait and the multiplier for the `backOff`. |
 | doRetry           | (e: any) => boolean   | No        | -                                       | Function with error parameter to decide if repetition is necessary.                                               |
 | value             | Error/Exception class | No        | [ ]                                     | An array of Exception types that are retryable.                                                                   |
+| reraise           | boolean               | No        | false                                   | If `true`, rethrows the original error instead of `MaxAttemptsError` when max attempts is reached.                 |
+| signal            | AbortSignal           | No        | -                                       | An `AbortSignal` to cancel the retry operation. Throws `AbortError` when aborted.                                 |
 
-### Example
+## Usage
+
+### 1. As a Decorator
+
+Use `@Retryable` decorator on class methods:
+
 ```typescript
 import { Retryable, BackOffPolicy } from 'typescript-retry-decorator';
 
-let count: number = 1;
-
-class RetryExample {
+class ApiService {
   @Retryable({ maxAttempts: 3 })
-  static async noDelayRetry() {
-    console.info(`Calling noDelayRetry for the ${count++} time at ${new Date().toLocaleTimeString()}`);
-    throw new Error('I failed!');
+  async fetchData(url: string) {
+    // This method will be retried up to 3 times on failure
+    const response = await fetch(url);
+    if (!response.ok) throw new Error('Failed to fetch');
+    return response.json();
   }
 
   @Retryable({ 
     maxAttempts: 3, 
-    value: [SyntaxError, ReferenceError]
-  })
-  static async noDelaySpecificRetry(): Promise<void> {
-    console.info(`Calling noDelaySpecificRetry for the ${count++} time at ${new Date().toLocaleTimeString()}`);
-    throw new SyntaxError('I failed with SyntaxError!');
-  }
-
-  @Retryable({ 
-    maxAttempts: 3,
     backOff: 1000,
-    doRetry: (e: Error) => {
-      return e.message === 'Error: 429';
-    }
-   })
-  static async doRetry() {
-    console.info(`Calling doRetry for the ${count++} time at ${new Date().toLocaleTimeString()}`);
-    throw new Error('Error: 429');
-  }
-
-  @Retryable({ 
-    maxAttempts: 3,
-    backOff: 1000,
-    doRetry: (e: Error) => {
-      return e.message === 'Error: 429';
-    }
-   })
-  static async doNotRetry() {
-    console.info(`Calling doNotRetry for the ${count++} time at ${new Date().toLocaleTimeString()}`);
-    throw new Error('Error: 404');
-  }
-
-  @Retryable({
-    maxAttempts: 3,
-    backOffPolicy: BackOffPolicy.FixedBackOffPolicy,
-    backOff: 1000
+    backOffPolicy: BackOffPolicy.ExponentialBackOffPolicy
   })
-  static async fixedBackOffRetry() {
-    console.info(`Calling fixedBackOffRetry 1s for the ${count++} time at ${new Date().toLocaleTimeString()}`);
+  async uploadFile(file: File) {
+    // Retries with exponential backoff: 1s, 2s, 4s
+    const formData = new FormData();
+    formData.append('file', file);
+    const response = await fetch('/upload', { method: 'POST', body: formData });
+    if (!response.ok) throw new Error('Upload failed');
+    return response.json();
+  }
+}
+```
+
+### 2. As a Function Wrapper
+
+Use `withRetry` to wrap any function:
+
+```typescript
+import { withRetry, BackOffPolicy } from 'typescript-retry-decorator';
+
+// Wrap an existing function
+async function fetchUser(userId: string) {
+  const response = await fetch(`/api/users/${userId}`);
+  if (!response.ok) throw new Error('Failed to fetch user');
+  return response.json();
+}
+
+const fetchUserWithRetry = withRetry(
+  { maxAttempts: 3, backOff: 1000 },
+  fetchUser
+);
+
+// Use it
+const user = await fetchUserWithRetry('123');
+
+// Or wrap inline
+const processWithRetry = withRetry(
+  { maxAttempts: 5, backOff: 2000 },
+  async (data: string) => {
+    // Your async operation here
+    return await someAsyncOperation(data);
+  }
+);
+```
+
+## Examples
+
+### Basic Retry
+```typescript
+import { Retryable, withRetry } from 'typescript-retry-decorator';
+
+// Decorator style
+class Service {
+  @Retryable({ maxAttempts: 3 })
+  async fetchData() {
     throw new Error('I failed!');
   }
+}
 
+// Function wrapper style
+const fetchData = withRetry(
+  { maxAttempts: 3 },
+  async () => {
+    throw new Error('I failed!');
+  }
+);
+```
+
+### Retry with Backoff
+```typescript
+// Fixed backoff - wait 1 second between retries
+@Retryable({
+  maxAttempts: 3,
+  backOffPolicy: BackOffPolicy.FixedBackOffPolicy,
+  backOff: 1000
+})
+async fixedBackOffRetry() {
+  throw new Error('I failed!');
+}
+
+// Exponential backoff - wait 1s, 3s, 9s
+@Retryable({
+  maxAttempts: 3,
+  backOffPolicy: BackOffPolicy.ExponentialBackOffPolicy,
+  backOff: 1000,
+  exponentialOption: { maxInterval: 10000, multiplier: 3 }
+})
+async exponentialBackOffRetry() {
+  throw new Error('I failed!');
+}
+```
+
+### Retry Specific Errors
+```typescript
+// Only retry on specific error types
+@Retryable({ 
+  maxAttempts: 3, 
+  value: [SyntaxError, ReferenceError]
+})
+async retrySpecificErrors() {
+  throw new SyntaxError('This will retry');
+  // throw new TypeError('This will NOT retry');
+}
+```
+
+### Conditional Retry
+```typescript
+// Retry only when custom condition is met
+@Retryable({ 
+  maxAttempts: 3,
+  backOff: 1000,
+  doRetry: (e: Error) => {
+    // Only retry on 429 (Too Many Requests) or 503 (Service Unavailable)
+    return e.message.includes('429') || e.message.includes('503');
+  }
+})
+async conditionalRetry() {
+  throw new Error('Error: 429 Too Many Requests');
+}
+```
+
+### Reraise Original Error
+```typescript
+// By default, MaxAttemptsError is thrown with the original error wrapped
+// Use reraise: true to throw the original error instead
+@Retryable({ 
+  maxAttempts: 3,
+  reraise: true  // Throw original error, not MaxAttemptsError
+})
+async reraiseExample() {
+  throw new Error('Original error');
+}
+
+try {
+  await service.reraiseExample();
+} catch (error) {
+  // error is the original Error, not MaxAttemptsError
+  console.log(error.message); // "Original error"
+}
+```
+
+### Cancellable Retry with AbortSignal
+```typescript
+import { withRetry, AbortError } from 'typescript-retry-decorator';
+
+// Create an abort controller
+const controller = new AbortController();
+
+// Function wrapper with signal
+const fetchWithRetry = withRetry(
+  { 
+    maxAttempts: 10, 
+    backOff: 2000,
+    signal: controller.signal  // Pass the abort signal
+  },
+  async (url: string) => {
+    const response = await fetch(url);
+    if (!response.ok) throw new Error('Failed');
+    return response.json();
+  }
+);
+
+// Cancel after 5 seconds
+setTimeout(() => controller.abort(), 5000);
+
+try {
+  const data = await fetchWithRetry('https://api.example.com/data');
+} catch (error) {
+  if (error instanceof AbortError) {
+    console.log('Retry operation was cancelled');
+  }
+}
+
+// Also works with decorator
+const controller2 = new AbortController();
+
+class Service {
+  @Retryable({ 
+    maxAttempts: 5, 
+    backOff: 1000,
+    signal: controller2.signal 
+  })
+  async fetchData() {
+    // Will be cancelled when controller2.abort() is called
+  }
+}
+```
+
+### Real-world Example
+```typescript
+import { withRetry, BackOffPolicy, MaxAttemptsError, AbortError } from 'typescript-retry-decorator';
+
+class ApiClient {
+  private baseUrl = 'https://api.example.com';
+
+  // Decorator on class method
   @Retryable({
     maxAttempts: 3,
+    backOff: 1000,
     backOffPolicy: BackOffPolicy.ExponentialBackOffPolicy,
-    backOff: 1000,
-    exponentialOption: { maxInterval: 4000, multiplier: 3 }
+    exponentialOption: { maxInterval: 5000, multiplier: 2 },
+    doRetry: (e: Error) => {
+      // Retry on network errors or 5xx server errors
+      return e.message.includes('network') || e.message.includes('5');
+    }
   })
-  static async ExponentialBackOffRetry() {
-    console.info(`Calling ExponentialBackOffRetry backOff 1s, multiplier=3 for the ${count++} time at ${new Date().toLocaleTimeString()}`);
-    throw new Error('I failed!');
+  async get(endpoint: string) {
+    const response = await fetch(`${this.baseUrl}${endpoint}`);
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status}`);
+    }
+    return response.json();
+  }
+
+  // Function wrapper with cancellation
+  async getWithCancellation(endpoint: string, timeoutMs: number) {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+
+    const fetchWithRetry = withRetry(
+      {
+        maxAttempts: 5,
+        backOff: 1000,
+        backOffPolicy: BackOffPolicy.ExponentialBackOffPolicy,
+        signal: controller.signal,
+        reraise: false
+      },
+      async () => {
+        const response = await fetch(`${this.baseUrl}${endpoint}`);
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        return response.json();
+      }
+    );
+
+    try {
+      const data = await fetchWithRetry();
+      clearTimeout(timeoutId);
+      return data;
+    } catch (error) {
+      clearTimeout(timeoutId);
+      if (error instanceof AbortError) {
+        console.log('Request cancelled due to timeout');
+      } else if (error instanceof MaxAttemptsError) {
+        console.log(`Failed after ${error.retryCount} attempts`);
+      }
+      throw error;
+    }
   }
 }
+```
 
-(async () => {
-  try {
-    resetCount();
-    await RetryExample.noDelayRetry();
-  } catch (e) {
-    console.info(`All retry done as expected, final message: '${e.message}'`);
-  }
+## API Reference
 
-  try {
-    resetCount();
-    await RetryExample.doRetry();
-  } catch (e) {
-    console.info(`All retry done as expected, final message: '${e.message}'`);
-  }
+### Exports
 
-  try {
-    resetCount();
-    await RetryExample.doNotRetry();
-  } catch (e) {
-    console.info(`All retry done as expected, final message: '${e.message}'`);
-  }
+```typescript
+// Main functions
+export function Retryable(options: RetryOptions): DecoratorFunction;
+export function withRetry<T extends (...args: any[]) => any>(
+  options: RetryOptions,
+  fn: T
+): T;
 
-  try {
-    resetCount();
-    await RetryExample.fixedBackOffRetry();
-  } catch (e) {
-    console.info(`All retry done as expected, final message: '${e.message}'`);
-  }
+// Error classes
+export class MaxAttemptsError extends Error {
+  code: string;
+  retryCount: number;
+  originalError: Error;
+}
 
-  try {
-    resetCount();
-    await RetryExample.ExponentialBackOffRetry();
-  } catch (e) {
-    console.info(`All retry done as expected, final message: '${e.message}'`);
-  }
-  
-})();
+export class AbortError extends Error {
+  code: string;
+  name: string;
+}
 
-function resetCount() {
-  count = 1;
+// Enums
+export enum BackOffPolicy {
+  FixedBackOffPolicy = 'FixedBackOffPolicy',
+  ExponentialBackOffPolicy = 'ExponentialBackOffPolicy'
+}
+
+// Interfaces
+export interface RetryOptions {
+  maxAttempts: number;
+  backOffPolicy?: BackOffPolicy;
+  backOff?: number;
+  doRetry?: (e: any) => boolean;
+  value?: ErrorConstructor[];
+  exponentialOption?: { maxInterval: number; multiplier: number };
+  reraise?: boolean;
+  signal?: AbortSignal;
 }
 ```
 
-Run the above code with `ts-node`, then output will be:
+## Common Use Cases
+
+### API Rate Limiting
+```typescript
+const apiCall = withRetry(
+  {
+    maxAttempts: 5,
+    backOff: 1000,
+    backOffPolicy: BackOffPolicy.ExponentialBackOffPolicy,
+    doRetry: (e: Error) => e.message.includes('429')
+  },
+  async () => await fetch('/api/data')
+);
 ```
-Calling noDelayRetry for the 1 time at 4:12:49 PM
-Calling noDelayRetry for the 2 time at 4:12:49 PM
-Calling noDelayRetry for the 3 time at 4:12:49 PM
-Calling noDelayRetry for the 4 time at 4:12:49 PM
-I failed!
-All retry done as expected, final message: 'Failed for 'noDelayRetry' for 3 times.'
-Calling noDelayRetry for the 1 time at 4:12:49 PM
-Calling noDelayRetry for the 2 time at 4:12:49 PM
-Calling noDelayRetry for the 3 time at 4:12:49 PM
-Calling noDelayRetry for the 4 time at 4:12:49 PM
-I failed with SyntaxError!
-All retry done as expected, final message: 'Failed for 'noDelaySpecificRetry' for 3 times.'
-Calling doRetry for the 1 time at 4:12:49 PM
-Calling doRetry for the 2 time at 4:12:50 PM
-Calling doRetry for the 3 time at 4:12:51 PM
-Calling doRetry for the 4 time at 4:12:52 PM
-Error: 429
-All retry done as expected, final message: 'Failed for 'doRetry' for 3 times.'
-Calling doNotRetry for the 1 time at 4:12:52 PM
-All retry done as expected, final message: 'Error: 404'
-Calling fixedBackOffRetry 1s for the 1 time at 4:12:52 PM
-Calling fixedBackOffRetry 1s for the 2 time at 4:12:53 PM
-Calling fixedBackOffRetry 1s for the 3 time at 4:12:54 PM
-Calling fixedBackOffRetry 1s for the 4 time at 4:12:55 PM
-I failed!
-All retry done as expected, final message: 'Failed for 'fixedBackOffRetry' for 3 times.'
-Calling ExponentialBackOffRetry backOff 1s, multiplier=3 for the 1 time at 4:12:55 PM
-Calling ExponentialBackOffRetry backOff 1s, multiplier=3 for the 2 time at 4:12:56 PM
-Calling ExponentialBackOffRetry backOff 1s, multiplier=3 for the 3 time at 4:12:59 PM
-Calling ExponentialBackOffRetry backOff 1s, multiplier=3 for the 4 time at 4:13:03 PM
-I failed!
-All retry done as expected, final message: 'Failed for 'ExponentialBackOffRetry' for 3 times.'
+
+### Network Resilience
+```typescript
+@Retryable({
+  maxAttempts: 3,
+  backOff: 2000,
+  value: [TypeError, NetworkError], // Retry only on network errors
+  exponentialOption: { maxInterval: 10000, multiplier: 2 }
+})
+async fetchFromUnstableService() {
+  // Your code here
+}
 ```
+
+### User-Cancellable Operations
+```typescript
+const controller = new AbortController();
+
+// Show cancel button to user
+document.getElementById('cancelBtn').onclick = () => controller.abort();
+
+const operation = withRetry(
+  { maxAttempts: 10, backOff: 1000, signal: controller.signal },
+  async () => await longRunningOperation()
+);
+```
+
+## License
+
+MIT

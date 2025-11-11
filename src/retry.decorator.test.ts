@@ -1,4 +1,4 @@
-import { BackOffPolicy, MaxAttemptsError, Retryable, withRetry } from './retry.decorator';
+import { BackOffPolicy, MaxAttemptsError, Retryable, withRetry, AbortError } from './retry.decorator';
 
 class TestClass {
   count: number;
@@ -387,6 +387,212 @@ describe('withRetry Function Wrapper Test', () => {
     
     expect(result).toBe('success');
     expect(callCount).toBe(2);
+  });
+});
+
+describe('AbortSignal Support Test', () => {
+  test('abort signal stops retry before first attempt', async () => {
+    const controller = new AbortController();
+    controller.abort(); // Abort immediately
+    
+    const asyncFunction = jest.fn()
+      .mockRejectedValue(new Error('Should not be called'));
+    
+    const wrappedFunction = withRetry({ 
+      maxAttempts: 3,
+      signal: controller.signal 
+    }, asyncFunction);
+    
+    try {
+      await wrappedFunction();
+      fail('Should have thrown AbortError');
+    } catch (e) {
+      expect(e).toBeInstanceOf(AbortError);
+      expect(e.message).toBe('Retry operation aborted');
+    }
+    expect(asyncFunction).not.toHaveBeenCalled();
+  });
+
+  test('abort signal stops retry after first failure', async () => {
+    const controller = new AbortController();
+    
+    const asyncFunction = jest.fn()
+      .mockImplementationOnce(() => {
+        controller.abort(); // Abort after first attempt
+        throw new Error('First attempt failed');
+      });
+    
+    const wrappedFunction = withRetry({ 
+      maxAttempts: 3,
+      backOff: 1000,
+      signal: controller.signal 
+    }, asyncFunction);
+    
+    try {
+      await wrappedFunction();
+      fail('Should have thrown AbortError');
+    } catch (e) {
+      expect(e).toBeInstanceOf(AbortError);
+    }
+    expect(asyncFunction).toHaveBeenCalledTimes(1);
+  });
+
+  test('abort signal during backoff sleep', async () => {
+    const controller = new AbortController();
+    
+    const asyncFunction = jest.fn()
+      .mockRejectedValue(new Error('Failed'));
+    
+    const wrappedFunction = withRetry({ 
+      maxAttempts: 5,
+      backOff: 5000, // Long backoff
+      signal: controller.signal 
+    }, asyncFunction);
+    
+    // Abort after 100ms (during sleep)
+    setTimeout(() => controller.abort(), 100);
+    
+    const startTime = Date.now();
+    try {
+      await wrappedFunction();
+      fail('Should have thrown AbortError');
+    } catch (e) {
+      expect(e).toBeInstanceOf(AbortError);
+      const elapsed = Date.now() - startTime;
+      // Should abort quickly, not wait for full 5s backoff
+      expect(elapsed).toBeLessThan(1000);
+    }
+    expect(asyncFunction).toHaveBeenCalledTimes(1);
+  });
+
+  test('abort signal with exponential backoff', async () => {
+    const controller = new AbortController();
+    
+    let callCount = 0;
+    const asyncFunction = jest.fn()
+      .mockImplementation(() => {
+        callCount++;
+        if (callCount === 2) {
+          controller.abort();
+        }
+        throw new Error('Failed');
+      });
+    
+    const wrappedFunction = withRetry({ 
+      maxAttempts: 5,
+      backOffPolicy: BackOffPolicy.ExponentialBackOffPolicy,
+      backOff: 1000,
+      signal: controller.signal 
+    }, asyncFunction);
+    
+    try {
+      await wrappedFunction();
+      fail('Should have thrown AbortError');
+    } catch (e) {
+      expect(e).toBeInstanceOf(AbortError);
+    }
+    expect(asyncFunction).toHaveBeenCalledTimes(2);
+  });
+
+  test('successful retry completes before abort signal', async () => {
+    const controller = new AbortController();
+    
+    const asyncFunction = jest.fn()
+      .mockRejectedValueOnce(new Error('First attempt failed'))
+      .mockResolvedValueOnce('success');
+    
+    const wrappedFunction = withRetry({ 
+      maxAttempts: 3,
+      backOff: 100,
+      signal: controller.signal 
+    }, asyncFunction);
+    
+    // Abort after operation completes
+    setTimeout(() => controller.abort(), 1000);
+    
+    const result = await wrappedFunction();
+    expect(result).toBe('success');
+    expect(asyncFunction).toHaveBeenCalledTimes(2);
+  });
+
+  test('abort signal does not interfere when not aborted', async () => {
+    const controller = new AbortController();
+    
+    const asyncFunction = jest.fn()
+      .mockRejectedValueOnce(new Error('Failed'))
+      .mockRejectedValueOnce(new Error('Failed'))
+      .mockResolvedValueOnce('success');
+    
+    const wrappedFunction = withRetry({ 
+      maxAttempts: 3,
+      backOff: 100,
+      signal: controller.signal 
+    }, asyncFunction);
+    
+    const result = await wrappedFunction();
+    expect(result).toBe('success');
+    expect(asyncFunction).toHaveBeenCalledTimes(3);
+  });
+
+  test('multiple abort signals with different operations', async () => {
+    const controller1 = new AbortController();
+    const controller2 = new AbortController();
+    
+    const asyncFunction1 = jest.fn().mockRejectedValue(new Error('Failed'));
+    const asyncFunction2 = jest.fn().mockRejectedValue(new Error('Failed'));
+    
+    const wrappedFunction1 = withRetry({ 
+      maxAttempts: 5,
+      backOff: 1000,
+      signal: controller1.signal 
+    }, asyncFunction1);
+    
+    const wrappedFunction2 = withRetry({ 
+      maxAttempts: 5,
+      backOff: 1000,
+      signal: controller2.signal 
+    }, asyncFunction2);
+    
+    // Abort only the first operation
+    setTimeout(() => controller1.abort(), 100);
+    
+    const promise1 = wrappedFunction1().catch((e: Error) => e);
+    const promise2 = wrappedFunction2().catch((e: Error) => e);
+    
+    const [result1, result2] = await Promise.all([promise1, promise2]);
+    
+    expect(result1).toBeInstanceOf(AbortError);
+    expect(result2).toBeInstanceOf(MaxAttemptsError);
+  });
+
+  test('abort signal with decorator usage', async () => {
+    const controller = new AbortController();
+    
+    class TestService {
+      callCount = 0;
+      
+      @Retryable({ 
+        maxAttempts: 3, 
+        backOff: 1000,
+        signal: controller.signal 
+      })
+      async fetchData(): Promise<string> {
+        this.callCount++;
+        throw new Error('Failed');
+      }
+    }
+    
+    const service = new TestService();
+    
+    setTimeout(() => controller.abort(), 100);
+    
+    try {
+      await service.fetchData();
+      fail('Should have thrown AbortError');
+    } catch (e) {
+      expect(e).toBeInstanceOf(AbortError);
+    }
+    expect(service.callCount).toBe(1);
   });
 });
 
